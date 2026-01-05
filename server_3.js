@@ -8,62 +8,194 @@ const PORT = process.env.PORT || 3002;
 
 const DATABASE_SECRETS = process.env.DATABASE_SECRETS;
 const DATABASE_URL = process.env.DATABASE;
-const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+const IMGBB_API_KEY = process.env.IMGBB_API_KEY || 'YOUR_IMGBB_KEY_HERE'; // ⚠️ غير هذا
 
-// 🔧 إصلاح: التأكد من صيغة الرابط
 const FIXED_DB_URL = DATABASE_URL && !DATABASE_URL.endsWith('/') ? DATABASE_URL + '/' : DATABASE_URL;
 
-console.log('⚙️ إعدادات البوت 3:');
-console.log(`📡 Firebase: ${FIXED_DB_URL ? '✅' : '❌'}`);
-console.log(`🔑 Secrets: ${DATABASE_SECRETS ? '✅' : '❌'}`);
-console.log(`🖼️ ImgBB: ${IMGBB_API_KEY ? '✅' : '❌'}`);
+// 📱 نفس User-Agents
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+];
 
-// دالة للقراءة من Firebase
-async function readFromFirebase(path) {
-    if (!FIXED_DB_URL || !DATABASE_SECRETS) {
-        console.log('⚠️ Firebase غير مهيء');
-        return null;
-    }
-    
-    const url = `${FIXED_DB_URL}${path}.json?auth=${DATABASE_SECRETS}`;
-    
-    try {
-        console.log(`📖 قراءة: ${path}`);
-        const response = await axios.get(url, { timeout: 10000 });
-        return response.data;
-    } catch (error) {
-        console.error(`❌ خطأ في قراءة ${path}:`, error.message);
-        return null;
-    }
+// 🔄 بروكسيات
+const PROXIES = [
+    '',
+    'https://cors-anywhere.herokuapp.com/',
+    'https://api.allorigins.win/raw?url=',
+    'https://corsproxy.io/?',
+    'https://proxy.cors.sh/'
+];
+
+// دالة عشوائية
+function getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// دالة للكتابة إلى Firebase
-async function writeToFirebase(path, data) {
-    if (!FIXED_DB_URL || !DATABASE_SECRETS) {
-        console.log('⚠️ Firebase غير مهيء');
-        return null;
-    }
+// دالة محاولة جميع الطرق
+async function fetchChapterPage(chapterUrl) {
+    console.log(`\n🎯 محاولة جلب الفصل: ${chapterUrl}`);
     
-    const url = `${FIXED_DB_URL}${path}.json?auth=${DATABASE_SECRETS}`;
+    const errors = [];
     
+    // المحاولة 1: مباشرة
     try {
-        const response = await axios.put(url, data, { timeout: 10000 });
-        console.log(`✅ تم الكتابة إلى ${path}`);
-        return response.data;
+        console.log('1️⃣ المحاولة المباشرة');
+        const response = await axios.get(chapterUrl, {
+            headers: {
+                'User-Agent': getRandomUserAgent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Referer': 'https://azoramoon.com/'
+            },
+            timeout: 20000
+        });
+        
+        if (response.status === 200) {
+            console.log('✅ نجحت المحاولة المباشرة');
+            return response.data;
+        }
     } catch (error) {
-        console.error(`❌ خطأ في الكتابة إلى ${path}:`, error.message);
-        throw error;
+        errors.push(`مباشر: ${error.message}`);
+        console.log('❌ فشلت المحاولة المباشرة:', error.message);
     }
+    
+    // المحاولة 2: مع بروكسيات
+    for (const proxy of PROXIES) {
+        try {
+            let targetUrl = chapterUrl;
+            
+            if (proxy) {
+                if (proxy.includes('?')) {
+                    targetUrl = proxy + encodeURIComponent(chapterUrl);
+                } else {
+                    targetUrl = proxy + chapterUrl;
+                }
+            }
+            
+            console.log(`🔄 المحاولة مع: ${proxy || 'بدون بروكسي'}`);
+            
+            const response = await axios.get(targetUrl, {
+                headers: {
+                    'User-Agent': getRandomUserAgent(),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                timeout: 25000
+            });
+            
+            if (response.status === 200) {
+                console.log(`✅ نجح مع ${proxy || 'بدون بروكسي'}`);
+                return response.data;
+            }
+        } catch (error) {
+            errors.push(`${proxy || 'بدون بروكسي'}: ${error.message}`);
+            console.log(`❌ فشل مع ${proxy || 'بدون بروكسي'}: ${error.message}`);
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    
+    throw new Error(`فشل جميع المحاولات: ${errors.join(', ')}`);
 }
 
-// دالة لرفع صورة إلى imgbb
+// دالة استخراج الصور (بجميع الطرق)
+function extractImagesFromHTML(html) {
+    const $ = cheerio.load(html);
+    const images = [];
+    
+    console.log('🔍 البحث عن الصور...');
+    
+    // طريقة 1: البحث بالكلاسات المعروفة
+    const selectors = [
+        '.wp-manga-chapter-img',
+        '.reading-content img',
+        '.page-break img',
+        '.text-center img',
+        'img[src*="data"]',
+        'img[src*="chapter"]',
+        'img[class*="img"]',
+        'img[class*="image"]'
+    ];
+    
+    for (const selector of selectors) {
+        const elements = $(selector);
+        if (elements.length > 0) {
+            console.log(`✅ وجد ${elements.length} صورة بـ "${selector}"`);
+            
+            elements.each((i, element) => {
+                const imgUrl = $(element).attr('src');
+                const dataSrc = $(element).attr('data-src');
+                const dataLazy = $(element).attr('data-lazy-src');
+                
+                const finalUrl = imgUrl || dataSrc || dataLazy;
+                
+                if (finalUrl) {
+                    images.push({
+                        order: images.length,
+                        originalUrl: finalUrl,
+                        selector: selector,
+                        foundWith: selector
+                    });
+                }
+            });
+        }
+    }
+    
+    // طريقة 2: البحث في div معين
+    if (images.length === 0) {
+        console.log('🔍 البحث في .reading-content');
+        $('.reading-content').find('img').each((i, element) => {
+            const imgUrl = $(element).attr('src');
+            if (imgUrl) {
+                images.push({
+                    order: images.length,
+                    originalUrl: imgUrl,
+                    selector: '.reading-content img',
+                    foundWith: 'fallback'
+                });
+            }
+        });
+    }
+    
+    // طريقة 3: جميع الصور
+    if (images.length === 0) {
+        console.log('🔍 البحث في جميع الصور');
+        $('img').each((i, element) => {
+            const imgUrl = $(element).attr('src');
+            if (imgUrl && imgUrl.includes('.jpg') || imgUrl.includes('.png') || imgUrl.includes('.jpeg')) {
+                images.push({
+                    order: images.length,
+                    originalUrl: imgUrl,
+                    selector: 'img',
+                    foundWith: 'all images'
+                });
+            }
+        });
+    }
+    
+    console.log(`📊 تم العثور على ${images.length} صورة`);
+    
+    // عرض عينة
+    if (images.length > 0) {
+        console.log('🔗 عينة من الصور:');
+        images.slice(0, 3).forEach((img, i) => {
+            console.log(`  ${i+1}. ${img.originalUrl.substring(0, 70)}...`);
+        });
+    }
+    
+    return images;
+}
+
+// دالة رفع إلى ImgBB
 async function uploadToImgBB(imageUrl) {
-    if (!IMGBB_API_KEY) {
-        console.log('⚠️ IMGBB_API_KEY غير موجود، استخدام الرابط الأصلي');
-        return { 
-            success: true, 
+    if (!IMGBB_API_KEY || IMGBB_API_KEY === 'YOUR_IMGBB_KEY_HERE') {
+        console.log('⚠️ IMGBB_API_KEY غير صالح، استخدام الرابط الأصلي');
+        return {
+            success: true,
             url: imageUrl,
-            warning: 'لم يتم الرفع (مفتاح مفقود)' 
+            warning: 'لم يتم الرفع (مفتاح مفقود)'
         };
     }
     
@@ -100,231 +232,43 @@ async function uploadToImgBB(imageUrl) {
     }
 }
 
-// دالة لجلب صور الفصل
-async function scrapeChapterImages(chapterUrl) {
+// دالة معالجة فصل واحد
+async function processSingleChapter(mangaId, chapterId, chapterData) {
     try {
-        console.log(`📥 جلب الصور من: ${chapterUrl}`);
-        
-        const response = await axios.get(chapterUrl, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Referer': 'https://azoramoon.com/'
-            },
-            timeout: 60000
-        });
-        
-        const $ = cheerio.load(response.data);
-        
-        const images = [];
-        
-        // 🔍 البحث بجميع الطرق الممكنة
-        const imageSelectors = [
-            '.wp-manga-chapter-img',
-            '.reading-content img',
-            '.chapter-content img',
-            '.page-break img',
-            '.text-center img',
-            'img[src*="data"]',
-            'img[src*="chapter"]'
-        ];
-        
-        for (const selector of imageSelectors) {
-            const elements = $(selector);
-            if (elements.length > 0) {
-                console.log(`✅ وجد ${elements.length} صورة بـ "${selector}"`);
-                
-                elements.each((i, element) => {
-                    const imgUrl = $(element).attr('src');
-                    const dataSrc = $(element).attr('data-src');
-                    const dataLazy = $(element).attr('data-lazy-src');
-                    
-                    const finalUrl = imgUrl || dataSrc || dataLazy;
-                    
-                    if (finalUrl) {
-                        images.push({
-                            order: images.length,
-                            originalUrl: finalUrl,
-                            status: 'pending',
-                            selector: selector
-                        });
-                    }
-                });
-                
-                break;
-            }
-        }
-        
-        if (images.length === 0) {
-            console.log('⚠️ لم أعثر على صور، جرب جميع العناصر img');
-            $('img').each((i, element) => {
-                const imgUrl = $(element).attr('src');
-                if (imgUrl && imgUrl.includes('data') && imgUrl.includes('.jpg')) {
-                    images.push({
-                        order: images.length,
-                        originalUrl: imgUrl,
-                        status: 'pending',
-                        selector: 'img (عام)'
-                    });
-                }
-            });
-        }
-        
-        console.log(`📊 تم العثور على ${images.length} صورة`);
-        
-        // حفظ عينة من الروابط للتحقق
-        if (images.length > 0) {
-            console.log('🔗 عينة من روابط الصور:');
-            images.slice(0, 3).forEach((img, i) => {
-                console.log(`  ${i+1}. ${img.originalUrl.substring(0, 80)}...`);
-            });
-        }
-        
-        return images;
-        
-    } catch (error) {
-        console.error('❌ خطأ في جلب الصور:', error.message);
-        console.error('📡 تفاصيل الخطأ:', error.response?.status, error.code);
-        return [];
-    }
-}
-
-// 🔍 دالة محسنة للبحث عن فصل
-async function findPendingChapter() {
-    try {
-        console.log('\n🔍 البحث عن فصل يحتاج معالجة...');
-        
-        // قراءة جميع الفصول من Firebase
-        const allChapters = await readFromFirebase('ImgChapter');
-        
-        if (!allChapters) {
-            console.log('ℹ️ لا توجد فصول في Firebase');
-            return null;
-        }
-        
-        console.log(`📚 عدد المانجا في Firebase: ${Object.keys(allChapters).length}`);
-        
-        let totalChapters = 0;
-        let pendingChapters = 0;
-        
-        // البحث في جميع المانجا
-        for (const [mangaId, mangaChapters] of Object.entries(allChapters)) {
-            if (!mangaChapters) continue;
-            
-            console.log(`📖 المانجا ${mangaId}: ${Object.keys(mangaChapters).length} فصل`);
-            totalChapters += Object.keys(mangaChapters).length;
-            
-            // البحث في فصول هذه المانجا
-            for (const [chapterId, chapterData] of Object.entries(mangaChapters)) {
-                if (chapterData && chapterData.status === 'pending_images') {
-                    pendingChapters++;
-                    console.log(`🎯 وجد فصل قيد الانتظار: ${mangaId}/${chapterId}`);
-                    
-                    return {
-                        mangaId,
-                        chapterId,
-                        chapterData,
-                        fullPath: `ImgChapter/${mangaId}/${chapterId}`
-                    };
-                }
-            }
-        }
-        
-        console.log(`📊 الإحصاء: ${totalChapters} فصل إجمالي، ${pendingChapters} فصل قيد الانتظار`);
-        
-        if (pendingChapters === 0) {
-            console.log('ℹ️ جميع الفصول تمت معالجتها أو لا توجد فصول قيد الانتظار');
-            
-            // التحقق من أول فصل لأي حالة
-            for (const [mangaId, mangaChapters] of Object.entries(allChapters)) {
-                if (mangaChapters && Object.keys(mangaChapters).length > 0) {
-                    const firstChapterId = Object.keys(mangaChapters)[0];
-                    const firstChapter = mangaChapters[firstChapterId];
-                    
-                    console.log(`🔍 فحص أول فصل: ${mangaId}/${firstChapterId}`);
-                    console.log(`📝 حالة الفصل: ${firstChapter.status || 'غير معروف'}`);
-                    console.log(`🔗 رابط الفصل: ${firstChapter.url || firstChapter.test || 'لا يوجد رابط'}`);
-                    
-                    if (firstChapter.status === 'pending_images') {
-                        return {
-                            mangaId,
-                            chapterId: firstChapterId,
-                            chapterData: firstChapter,
-                            fullPath: `ImgChapter/${mangaId}/${firstChapterId}`
-                        };
-                    }
-                    break;
-                }
-            }
-        }
-        
-        return null;
-        
-    } catch (error) {
-        console.error('❌ خطأ في البحث عن فصل:', error.message);
-        return null;
-    }
-}
-
-// دالة لمعالجة فصل واحد
-async function processChapter(mangaId, chapterId, chapterData) {
-    try {
-        const chapterPath = `ImgChapter/${mangaId}/${chapterId}`;
-        
         console.log(`\n🎯 معالجة الفصل: ${chapterId}`);
         console.log(`📖 المانجا: ${mangaId}`);
-        console.log(`🔗 الرابط: ${chapterData.url || chapterData.test || 'لا يوجد رابط'}`);
-        console.log(`📝 الحالة الحالية: ${chapterData.status || 'غير معروف'}`);
+        console.log(`🔗 الرابط: ${chapterData.url || chapterData.test}`);
         
-        // التحقق من وجود رابط
         const chapterUrl = chapterData.url || chapterData.test;
+        
         if (!chapterUrl) {
             console.log('❌ لا يوجد رابط للفصل');
-            
-            await writeToFirebase(chapterPath, {
-                ...chapterData,
-                status: 'failed',
-                error: 'لا يوجد رابط للفصل',
-                completedAt: Date.now()
-            });
-            
             return { success: false, error: 'لا يوجد رابط للفصل' };
         }
         
-        // تحديث الحالة
-        await writeToFirebase(chapterPath, {
-            ...chapterData,
-            status: 'processing_images',
-            startedAt: Date.now(),
-            processedAt: Date.now()
-        });
+        // جلب صفحة الفصل
+        const html = await fetchChapterPage(chapterUrl);
         
-        console.log(`📥 بدء تنزيل الصور...`);
-        
-        // جلب الصور
-        const images = await scrapeChapterImages(chapterUrl);
+        // استخراج الصور
+        const images = extractImagesFromHTML(html);
         
         if (images.length === 0) {
-            console.log('❌ لم يتم العثور على أي صور');
+            console.log('❌ لم أعثر على أي صور');
+            console.log('🔍 محتوى HTML (أول 500 حرف):');
+            console.log(html.substring(0, 500) + '...');
             
-            await writeToFirebase(chapterPath, {
-                ...chapterData,
-                status: 'failed',
+            return { 
+                success: false, 
                 error: 'لم يتم العثور على صور',
-                completedAt: Date.now()
-            });
-            
-            return { success: false, error: 'لم يتم العثور على صور' };
+                htmlSample: html.substring(0, 500)
+            };
         }
         
-        console.log(`🖼️ بدء رفع ${images.length} صورة إلى ImgBB...`);
+        console.log(`🖼️ بدء رفع ${images.length} صورة...`);
         
-        // رفع كل صورة
+        // رفع الصور
         const uploadedImages = [];
         let successCount = 0;
-        let failCount = 0;
         
         for (let i = 0; i < images.length; i++) {
             const image = images[i];
@@ -346,7 +290,7 @@ async function processChapter(mangaId, chapterId, chapterData) {
                     });
                     
                     successCount++;
-                    console.log(`✅ تم رفع الصورة ${i + 1}: ${uploadResult.url.substring(0, 60)}...`);
+                    console.log(`✅ تم رفع الصورة ${i + 1}`);
                 } else {
                     uploadedImages.push({
                         order: image.order,
@@ -357,20 +301,17 @@ async function processChapter(mangaId, chapterId, chapterData) {
                         uploadedAt: Date.now(),
                         success: false
                     });
-                    
-                    failCount++;
                     console.log(`❌ فشل رفع الصورة ${i + 1}: ${uploadResult.error}`);
                 }
                 
-                // تأخير بين الصور لتجنب حظر ImgBB
+                // تأخير بين الصور
                 if (i < images.length - 1) {
-                    const delay = 1500 + Math.random() * 1000;
+                    const delay = 2000 + Math.random() * 1000;
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
                 
             } catch (error) {
-                console.error(`💥 خطأ غير متوقع في الصورة ${i + 1}:`, error.message);
-                
+                console.error(`💥 خطأ في الصورة ${i + 1}:`, error.message);
                 uploadedImages.push({
                     order: image.order,
                     originalUrl: image.originalUrl,
@@ -380,43 +321,44 @@ async function processChapter(mangaId, chapterId, chapterData) {
                     uploadedAt: Date.now(),
                     success: false
                 });
-                
-                failCount++;
             }
         }
         
-        // ترتيب الصور حسب الترتيب
+        // ترتيب الصور
         uploadedImages.sort((a, b) => a.order - b.order);
         
-        console.log(`📊 نتيجة الرفع: ${successCount} ناجح، ${failCount} فاشل`);
+        console.log(`📊 النتيجة: ${successCount}/${images.length} نجحت`);
         
-        // تحديث الفصل بالصور
-        await writeToFirebase(chapterPath, {
+        // تحديث في Firebase
+        const chapterPath = `ImgChapter/${mangaId}/${chapterId}`;
+        const dbUrl = `${FIXED_DB_URL}${chapterPath}.json?auth=${DATABASE_SECRETS}`;
+        
+        const updateData = {
             ...chapterData,
             images: uploadedImages,
-            status: successCount > 0 ? 'completed' : 'partially_failed',
+            status: successCount > 0 ? 'completed' : 'failed',
             imagesCount: uploadedImages.length,
             successCount: successCount,
-            failCount: failCount,
-            completedAt: Date.now(),
-            test: null // حذف الحقل المؤقت
-        });
+            failCount: uploadedImages.length - successCount,
+            processedAt: Date.now(),
+            test: null
+        };
         
-        console.log(`✅ تم معالجة الفصل ${chapterId} بنجاح`);
+        await axios.put(dbUrl, updateData, { timeout: 10000 });
+        
+        console.log(`✅ تم تحديث Firebase`);
         
         return { 
-            success: true, 
+            success: successCount > 0,
             imagesCount: uploadedImages.length,
             successCount: successCount,
-            failCount: failCount,
+            failCount: uploadedImages.length - successCount,
             mangaId: mangaId,
             chapterId: chapterId
         };
         
     } catch (error) {
         console.error('❌ خطأ في معالجة الفصل:', error.message);
-        console.error('🔧 تفاصيل الخطأ:', error.stack);
-        
         return { 
             success: false, 
             error: error.message,
@@ -426,110 +368,34 @@ async function processChapter(mangaId, chapterId, chapterData) {
     }
 }
 
-// API لمعالجة الفصل التالي
-app.get('/process-next-chapter', async (req, res) => {
+// API لمعالجة فصل محدد
+app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
     try {
-        console.log('\n🚀 طلب معالجة الفصل التالي...');
+        const { mangaId, chapterId } = req.params;
         
-        // البحث عن فصل
-        const chapterData = await findPendingChapter();
+        console.log(`\n🚀 معالجة فصل محدد: ${mangaId}/${chapterId}`);
+        
+        // قراءة بيانات الفصل
+        const chapterPath = `ImgChapter/${mangaId}/${chapterId}`;
+        const dbUrl = `${FIXED_DB_URL}${chapterPath}.json?auth=${DATABASE_SECRETS}`;
+        
+        const response = await axios.get(dbUrl, { timeout: 10000 });
+        const chapterData = response.data;
         
         if (!chapterData) {
-            return res.json({ 
-                success: false, 
-                message: 'لا توجد فصول تحتاج معالجة',
-                suggestion: 'تحقق من أن البوت 2 قام بإنشاء الفصول في Firebase'
+            return res.json({
+                success: false,
+                error: 'لم يتم العثور على الفصل'
             });
         }
         
         // معالجة الفصل
-        const result = await processChapter(
-            chapterData.mangaId,
-            chapterData.chapterId,
-            chapterData.chapterData
-        );
+        const result = await processSingleChapter(mangaId, chapterId, chapterData);
         
-        if (result.success) {
-            res.json({
-                success: true,
-                message: `تم معالجة الفصل ${chapterData.chapterId}`,
-                mangaId: chapterData.mangaId,
-                chapterId: chapterData.chapterId,
-                imagesCount: result.imagesCount,
-                successCount: result.successCount,
-                failCount: result.failCount
-            });
-        } else {
-            res.status(500).json({
-                success: false,
-                error: result.error,
-                mangaId: chapterData.mangaId,
-                chapterId: chapterData.chapterId
-            });
-        }
+        res.json(result);
         
     } catch (error) {
-        console.error('❌ خطأ في /process-next-chapter:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
-    }
-});
-
-// API لرؤية جميع الفصول
-app.get('/chapters', async (req, res) => {
-    try {
-        const allChapters = await readFromFirebase('ImgChapter');
-        
-        if (!allChapters) {
-            return res.json({
-                success: false,
-                message: 'لا توجد فصول في Firebase'
-            });
-        }
-        
-        const chaptersList = [];
-        let totalChapters = 0;
-        let pendingCount = 0;
-        let completedCount = 0;
-        
-        // تحليل جميع الفصول
-        for (const [mangaId, mangaChapters] of Object.entries(allChapters)) {
-            if (!mangaChapters) continue;
-            
-            for (const [chapterId, chapterData] of Object.entries(mangaChapters)) {
-                totalChapters++;
-                
-                if (chapterData.status === 'pending_images') pendingCount++;
-                if (chapterData.status === 'completed') completedCount++;
-                
-                chaptersList.push({
-                    mangaId,
-                    chapterId,
-                    status: chapterData.status || 'unknown',
-                    title: chapterData.title || 'بدون عنوان',
-                    url: chapterData.url || chapterData.test || 'لا يوجد',
-                    imagesCount: chapterData.images?.length || 0,
-                    chapterNumber: chapterData.chapterNumber || 0
-                });
-            }
-        }
-        
-        res.json({
-            success: true,
-            stats: {
-                totalManga: Object.keys(allChapters).length,
-                totalChapters: totalChapters,
-                pending: pendingCount,
-                completed: completedCount,
-                other: totalChapters - pendingCount - completedCount
-            },
-            chapters: chaptersList.slice(0, 20), // أول 20 فقط
-            totalFound: chaptersList.length
-        });
-        
-    } catch (error) {
+        console.error('❌ خطأ:', error.message);
         res.status(500).json({
             success: false,
             error: error.message
@@ -537,23 +403,59 @@ app.get('/chapters', async (req, res) => {
     }
 });
 
-// اختبار ImgBB
-app.get('/test-imgbb', async (req, res) => {
-    if (!IMGBB_API_KEY) {
-        return res.json({
-            success: false,
-            message: 'IMGBB_API_KEY غير موجود'
-        });
-    }
-    
+// اختبار فصل محدد
+app.get('/test-chapter/:mangaId/:chapterId', async (req, res) => {
     try {
-        const testImage = 'https://via.placeholder.com/150';
-        const result = await uploadToImgBB(testImage);
+        const { mangaId, chapterId } = req.params;
         
-        res.json({
-            success: result.success,
-            result: result
-        });
+        console.log(`\n🔍 اختبار فصل: ${mangaId}/${chapterId}`);
+        
+        // قراءة بيانات الفصل
+        const chapterPath = `ImgChapter/${mangaId}/${chapterId}`;
+        const dbUrl = `${FIXED_DB_URL}${chapterPath}.json?auth=${DATABASE_SECRETS}`;
+        
+        const response = await axios.get(dbUrl, { timeout: 10000 });
+        const chapterData = response.data;
+        
+        if (!chapterData) {
+            return res.json({
+                success: false,
+                error: 'لم يتم العثور على الفصل'
+            });
+        }
+        
+        const chapterUrl = chapterData.url || chapterData.test;
+        
+        if (!chapterUrl) {
+            return res.json({
+                success: false,
+                error: 'لا يوجد رابط للفصل'
+            });
+        }
+        
+        // اختبار الجلب فقط
+        console.log(`🔗 اختبار الرابط: ${chapterUrl}`);
+        
+        try {
+            const html = await fetchChapterPage(chapterUrl);
+            const images = extractImagesFromHTML(html);
+            
+            res.json({
+                success: true,
+                url: chapterUrl,
+                imagesFound: images.length,
+                sampleImages: images.slice(0, 3),
+                htmlLength: html.length,
+                sampleHTML: html.substring(0, 300)
+            });
+            
+        } catch (error) {
+            res.json({
+                success: false,
+                error: error.message,
+                url: chapterUrl
+            });
+        }
         
     } catch (error) {
         res.status(500).json({
@@ -566,43 +468,32 @@ app.get('/test-imgbb', async (req, res) => {
 // صفحة رئيسية
 app.get('/', (req, res) => {
     res.send(`
-        <h1>🖼️ البوت 3 - معالج الصور</h1>
+        <h1>🖼️ البوت 3 - النسخة المتطورة</h1>
         
-        <h2>🔗 الروابط:</h2>
+        <h2>🎯 اختبار فصل محدد:</h2>
         <ul>
-            <li><a href="/process-next-chapter">/process-next-chapter</a> - معالجة الفصل التالي</li>
-            <li><a href="/chapters">/chapters</a> - رؤية جميع الفصول</li>
-            <li><a href="/test-imgbb">/test-imgbb</a> - اختبار ImgBB</li>
+            <li><a href="/test-chapter/14584dfb5297/ch_0001">/test-chapter/14584dfb5297/ch_0001</a> - اختبار الفصل 1</li>
+            <li><a href="/test-chapter/14584dfb5297/ch_0002">/test-chapter/14584dfb5297/ch_0002</a> - اختبار الفصل 2</li>
+            <li><a href="/process-chapter/14584dfb5297/ch_0002">/process-chapter/14584dfb5297/ch_0002</a> - معالجة الفصل 2</li>
         </ul>
         
-        <h2>⚙️ الإعدادات:</h2>
-        <ul>
-            <li>Firebase: ${DATABASE_SECRETS ? '✅' : '❌'}</li>
-            <li>ImgBB: ${IMGBB_API_KEY ? '✅' : '❌'}</li>
-            <li>Port: ${PORT}</li>
-        </ul>
+        <h2>⚙️ المعلومات:</h2>
+        <p>عدد User-Agents: ${USER_AGENTS.length}</p>
+        <p>عدد البروكسيات: ${PROXIES.length}</p>
+        <p>ImgBB Key: ${IMGBB_API_KEY ? '✅ موجود' : '❌ مفقود'}</p>
         
-        <h2>🎯 المهام:</h2>
-        <ul>
-            <li>تنزيل صور الفصول من azoramoon.com</li>
-            <li>رفع الصور إلى ImgBB</li>
-            <li>حفظ الروابط في Firebase</li>
-        </ul>
+        <h2>📝 التعليمات:</h2>
+        <ol>
+            <li>اختبر فصل أولاً (/test-chapter)</li>
+            <li>إذا وجد صور، عالجه (/process-chapter)</li>
+            <li>تحقق من Firebase بعد المعالجة</li>
+        </ol>
     `);
 });
 
-// معالجة تلقائية
-setInterval(async () => {
-    console.log('\n⏰ فحص تلقائي...');
-    const chapter = await findPendingChapter();
-    if (chapter) {
-        console.log(`🔍 وجد فصل: ${chapter.chapterId}`);
-    }
-}, 45000);
-
 // تشغيل السيرفر
 app.listen(PORT, () => {
-    console.log(`\n✅ البوت 3 يعمل على المنفذ ${PORT}`);
+    console.log(`\n✅ البوت 3 المعدل يعمل على المنفذ ${PORT}`);
     console.log(`🔗 افتح: https://server-3.onrender.com`);
-    console.log(`📡 جاهز لمعالجة الفصول...`);
+    console.log(`🎯 جاهز لاختبار الفصول...`);
 });
