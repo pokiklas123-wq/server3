@@ -1,19 +1,16 @@
 {
-  "name": "manga-bot-3",
+  "name": "manga-scraper-1",
   "version": "1.0.0",
-  "description": "Bot to download and upload images",
-  "main": "server_3.js",
+  "description": "السيرفر 1 - جلب المانجا من جميع الصفحات",
+  "main": "server-1.js",
   "scripts": {
-    "start": "node server_3.js",
-    "dev": "nodemon server_3.js"
+    "start": "node server-1.js",
+    "dev": "nodemon server-1.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12",
     "express": "^4.18.2",
-    "dotenv": "^16.0.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.0"
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1"
   }
 }
