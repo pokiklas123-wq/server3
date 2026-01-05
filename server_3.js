@@ -5,8 +5,8 @@ require('dotenv').config();
 
 // ==================== متغيرات البيئة ====================
 const PORT = process.env.PORT || 3002;
-const DATABASE_SECRETS = process.env.DATABASE_SECRETS;
-const DATABASE_URL = process.env.DATABASE;
+const DATABASE_SECRETS = "KXPNxnGZDA1BGnzs4kZIA45o6Vr9P5nJ3Z01X4bt";
+const DATABASE_URL = "https://hackerdz-b1bdf.firebaseio.com";
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 
 const FIXED_DB_URL = DATABASE_URL && !DATABASE_URL.endsWith('/') ? DATABASE_URL + '/' : DATABASE_URL;
