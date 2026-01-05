@@ -77,8 +77,6 @@ function getAdvancedHeaders() {
 }
 
 async function advancedFetch(url, maxRetries = 5) {
-    // ... (منطق advancedFetch من الكود الأصلي)
-    // لتبسيط الكود، سنستخدم دالة جلب مبسطة
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         const proxy = ADVANCED_PROXIES[Math.floor(Math.random() * ADVANCED_PROXIES.length)];
         try {
@@ -118,25 +116,23 @@ function extractImages(html) {
     const $ = cheerio.load(html);
     const images = [];
     
-    // البحث بـ .wp-manga-chapter-img
     $('.wp-manga-chapter-img').each((i, element) => {
         const rawUrl = $(element).attr('src') || $(element).attr('data-src') || $(element).attr('data-lazy-src');
         if (rawUrl) {
             const cleanUrl = cleanImageUrl(rawUrl);
             if (cleanUrl && (cleanUrl.includes('.jpg') || cleanUrl.includes('.png') || cleanUrl.includes('.jpeg'))) {
-                images.push({ order: i, originalUrl: cleanUrl });
+                images.push({ order: i + 1, originalUrl: cleanUrl });
             }
         }
     });
     
-    // إذا لم نجد، نبحث في .reading-content
     if (images.length === 0) {
         $('.reading-content img').each((i, element) => {
             const imgUrl = $(element).attr('src');
             if (imgUrl) {
                 const cleanUrl = cleanImageUrl(imgUrl);
                 if (cleanUrl) {
-                    images.push({ order: i, originalUrl: cleanUrl });
+                    images.push({ order: i + 1, originalUrl: cleanUrl });
                 }
             }
         });
@@ -151,40 +147,30 @@ async function uploadToImgBB(imageUrl) {
     }
     
     try {
-        // 1. جلب الصورة كـ Buffer
         const imageResponse = await axios.get(imageUrl, {
             responseType: 'arraybuffer',
             headers: getAdvancedHeaders(),
             timeout: 20000
         });
         
-        // 2. تحويلها إلى Base64
         const base64Image = Buffer.from(imageResponse.data, 'binary').toString('base64');
         
-        // 3. الرفع إلى ImgBB
         const formData = new URLSearchParams();
         formData.append('key', IMGBB_API_KEY);
         formData.append('image', base64Image);
         
         const uploadResponse = await axios.post('https://api.imgbb.com/1/upload', formData, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             timeout: 30000
         });
         
         if (uploadResponse.data.success) {
-            return {
-                success: true,
-                url: uploadResponse.data.data.url,
-                deleteUrl: uploadResponse.data.data.delete_url
-            };
+            return { success: true, url: uploadResponse.data.data.url };
         } else {
             return { success: false, message: uploadResponse.data.error.message };
         }
         
     } catch (error) {
-        console.error(`❌ فشل رفع الصورة ${imageUrl}:`, error.message);
         return { success: false, message: error.message };
     }
 }
@@ -194,213 +180,99 @@ async function uploadToImgBB(imageUrl) {
 async function processChapter(mangaId, chapterId, chapterData) {
     console.log(`\n🎯 بدء معالجة الفصل: ${chapterData.title} (${mangaId}/${chapterId})`);
     
-    // تحديث الحالة إلى "قيد المعالجة"
-    await writeToFirebase(`ImgChapter/${mangaId}/${chapterId}`, { ...chapterData, status: 'processing', startedAt: Date.now() });
+    // تحديث الحالة إلى "processing"
+    await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'processing');
     
     try {
-        // 1. جلب الصفحة واستخراج الصور
         const html = await fetchPageWithRetry(chapterData.url);
         const images = extractImages(html);
         
-        if (images.length === 0) {
-            throw new Error('لم يتم العثور على أي صور في الصفحة.');
-        }
+        if (images.length === 0) throw new Error('لم يتم العثور على أي صور.');
         
         console.log(`📊 تم العثور على ${images.length} صورة. بدء الرفع...`);
         
-        // 2. رفع الصور إلى ImgBB
-        const uploadedImages = [];
+        const uploadedImages = {};
         let successCount = 0;
         
         for (const image of images) {
             const uploadResult = await uploadToImgBB(image.originalUrl);
             
+            uploadedImages[image.order] = {
+                imgOriginal: image.originalUrl,
+                imgbb: uploadResult.success ? uploadResult.url : "failed"
+            };
+            
             if (uploadResult.success) {
-                uploadedImages.push({
-                    order: image.order,
-                    originalUrl: image.originalUrl,
-                    imgbbUrl: uploadResult.url,
-                    deleteUrl: uploadResult.deleteUrl
-                });
                 successCount++;
-                console.log(`✅ تم رفع الصورة ${image.order + 1}`);
+                console.log(`✅ تم رفع الصورة ${image.order}`);
             } else {
-                uploadedImages.push({
-                    order: image.order,
-                    originalUrl: image.originalUrl,
-                    error: uploadResult.message
-                });
-                console.log(`❌ فشل رفع الصورة ${image.order + 1}: ${uploadResult.message}`);
+                console.log(`❌ فشل رفع الصورة ${image.order}: ${uploadResult.message}`);
             }
-            // تأخير بسيط بين عمليات الرفع
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        // 3. تحديث Firebase
-        const finalStatus = successCount > 0 ? 'completed' : 'failed';
+        // حفظ الصور تحت ImgChapter/manga_id/chapters/chapter_id/images/
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/images`, uploadedImages);
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'completed');
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/completedAt`, Date.now());
         
-        await writeToFirebase(`ImgChapter/${mangaId}/${chapterId}`, {
-            ...chapterData,
-            images: uploadedImages,
-            status: finalStatus,
-            imagesCount: uploadedImages.length,
-            successCount: successCount,
-            failCount: uploadedImages.length - successCount,
-            completedAt: Date.now()
-        });
-        
-        console.log(`\n✅ تم معالجة الفصل ${chapterId} بنجاح! الحالة: ${finalStatus}`);
-        
-        return {
-            success: successCount > 0,
-            message: `تم معالجة ${uploadedImages.length} صورة. ناجح: ${successCount}. فاشل: ${uploadedImages.length - successCount}.`,
-            mangaId,
-            chapterId,
-            status: finalStatus
-        };
+        console.log(`\n✅ تم معالجة الفصل ${chapterId} بنجاح!`);
+        return { success: true, status: 'completed' };
         
     } catch (error) {
         console.error('❌ خطأ في معالجة الفصل:', error.message);
-        
-        // تحديث حالة الخطأ في Firebase
-        await writeToFirebase(`ImgChapter/${mangaId}/${chapterId}`, {
-            ...chapterData,
-            status: 'error',
-            error: error.message,
-            failedAt: Date.now()
-        });
-        
-        return {
-            success: false,
-            error: error.message,
-            mangaId,
-            chapterId
-        };
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'error');
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/error`, error.message);
+        return { success: false, status: 'error' };
     }
 }
 
 // ==================== واجهات API ====================
 const app = express();
 
-// 🎯 API يستدعيه البوت 2 لمعالجة فصل محدد
 app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
     const { mangaId, chapterId } = req.params;
-    console.log(`\n🚀 طلب معالجة فصل محدد من البوت 2: ${mangaId}/${chapterId}`);
-    
     try {
-        const chapterData = await readFromFirebase(`ImgChapter/${mangaId}/${chapterId}`);
+        const chapterData = await readFromFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}`);
+        if (!chapterData) return res.status(404).json({ success: false, message: 'لم يتم العثور على الفصل' });
         
-        if (!chapterData) {
-            return res.status(404).json({ success: false, message: 'لم يتم العثور على الفصل' });
-        }
-        
-        const result = await processChapter(mangaId, chapterId, chapterData);
-        res.json(result);
-        
+        // المعالجة في الخلفية
+        processChapter(mangaId, chapterId, chapterData);
+        res.json({ success: true, message: 'بدأت معالجة الصور.' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// 🔄 API للتحقق المستمر (يتم استدعاؤه بواسطة Render Cron Job)
-app.get('/start-continuous-check', async (req, res) => {
-    console.log('\n🔄 بدء التحقق المستمر من الفصول المعلقة...');
-    
-    try {
-        const allMangaChapters = await readFromFirebase('ImgChapter');
-        let processedCount = 0;
-        let targetChapter = null;
-        
-        if (allMangaChapters) {
-            // البحث عن فصل واحد فقط في حالة "pending_images" أو "error"
-            for (const [mangaId, mangaChapters] of Object.entries(allMangaChapters)) {
-                if (!mangaChapters) continue;
-                
-                for (const [chapterId, chapterData] of Object.entries(mangaChapters)) {
-                    if (chapterData && (chapterData.status === 'pending_images' || chapterData.status === 'error')) {
-                        targetChapter = { mangaId, chapterId, chapterData };
-                        break;
+// محرك الفحص المستمر للفصول المعلقة (لضمان الاستمرارية)
+async function continuousChapterCheck() {
+    while (true) {
+        try {
+            const allManga = await readFromFirebase('ImgChapter');
+            if (allManga) {
+                for (const [mangaId, mangaData] of Object.entries(allManga)) {
+                    if (mangaData.chapters) {
+                        for (const [chapId, chapData] of Object.entries(mangaData.chapters)) {
+                            if (chapData && (chapData.status === 'pending_images' || chapData.status === 'error')) {
+                                await processChapter(mangaId, chapId, chapData);
+                                await new Promise(resolve => setTimeout(resolve, 5000));
+                            }
+                        }
                     }
                 }
-                if (targetChapter) break;
             }
+        } catch (error) {
+            console.error('❌ خطأ في محرك فحص الفصول:', error.message);
         }
-        
-        if (!targetChapter) {
-            return res.json({
-                success: true,
-                message: 'لا توجد فصول تحتاج معالجة حالياً.'
-            });
-        }
-        
-        // معالجة الفصل المستهدف
-        const result = await processChapter(
-            targetChapter.mangaId,
-            targetChapter.chapterId,
-            targetChapter.chapterData
-        );
-        
-        res.json({
-            success: true,
-            message: `تم معالجة فصل واحد: ${targetChapter.mangaId}/${targetChapter.chapterId}. الحالة: ${result.status}`,
-            details: result
-        });
-        
-    } catch (error) {
-        console.error('❌ خطأ في التحقق المستمر:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        await new Promise(resolve => setTimeout(resolve, 60000));
     }
-});
+}
 
-// 🏠 الصفحة الرئيسية المبسطة
 app.get('/', (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html dir="rtl" lang="ar">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>🖼️ البوت 3 - معالج الصور</title>
-            <style>
-                body { font-family: 'Arial', sans-serif; margin: 20px; background: #f5f5f5; text-align: right; }
-                .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0 0 0 / 10%); }
-                h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
-                ul { list-style: none; padding: 0; }
-                li { margin: 10px 0; padding: 10px; background: #f9f9f9; border-radius: 5px; border-right: 4px solid #4CAF50; }
-                a { color: #2196F3; text-decoration: none; font-weight: bold; }
-                a:hover { text-decoration: underline; }
-                .status { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.9em; }
-                .success { background: #d4edda; color: #155724; }
-                .error { background: #f8d7da; color: #721c24; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🖼️ البوت 3 - معالج الصور</h1>
-                
-                <h2>⚙️ حالة النظام:</h2>
-                <ul>
-                    <li>Firebase: <span class="status ${DATABASE_SECRETS ? 'success' : 'error'}">${DATABASE_SECRETS ? '✅ متصل' : '❌ غير متصل'}</span></li>
-                    <li>ImgBB API: <span class="status ${IMGBB_API_KEY ? 'success' : 'error'}">${IMGBB_API_KEY ? '✅ موجود' : '❌ مفقود'}</span></li>
-                    <li>المنفذ: <span class="status success">${PORT}</span></li>
-                </ul>
-                
-                <h2>🎯 الروابط الرئيسية:</h2>
-                <ul>
-                    <li><a href="/start-continuous-check">/start-continuous-check</a> - بدء التحقق المستمر (يجب أن يتم استدعاؤه بواسطة Render Cron Job)</li>
-                    <li>/process-chapter/:mangaId/:chapterId - يستدعيه البوت 2</li>
-                </ul>
-                
-                <h2>📝 ملاحظة:</h2>
-                <p>هذا البوت يعمل بشكل آلي. يجب إعداد Render Cron Job لاستدعاء <code>/start-continuous-check</code> بشكل دوري (مثلاً كل 5 دقائق) لضمان معالجة الفصول المعلقة.</p>
-            </div>
-        </body>
-        </html>
-    `);
+    res.send(`<h1>🖼️ البوت 3 - معالج الصور (معدل)</h1>`);
 });
 
-// تشغيل السيرفر
 app.listen(PORT, () => {
-    console.log(`\n✅ البوت 3 (معالج الصور) يعمل على المنفذ ${PORT}`);
-    console.log(`🎯 جاهز لمعالجة الصور...`);
+    console.log(`\n✅ البوت 3 يعمل على المنفذ ${PORT}`);
+    continuousChapterCheck();
 });
