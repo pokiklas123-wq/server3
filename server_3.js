@@ -17,11 +17,15 @@ async function writeToFirebase(path, data) {
         console.error('❌ خطأ: متغيرات Firebase غير موجودة.');
         return;
     }
-    const url = `${FIXED_DB_URL}${path}.json?auth=${DATABASE_SECRETS}`;
+    
+    // تنظيف المسار من الأحرف غير المسموح بها
+    const cleanPath = path.replace(/[.#$\[\]]/g, '_');
+    const url = `${FIXED_DB_URL}${cleanPath}.json?auth=${DATABASE_SECRETS}`;
+    
     try {
         await axios.put(url, data);
     } catch (error) {
-        console.error(`❌ فشل الكتابة إلى Firebase في ${path}:`, error.message);
+        console.error(`❌ فشل الكتابة إلى Firebase في ${cleanPath}:`, error.message);
         throw error;
     }
 }
@@ -31,20 +35,23 @@ async function readFromFirebase(path) {
         console.error('❌ خطأ: متغيرات Firebase غير موجودة.');
         return null;
     }
-    const url = `${FIXED_DB_URL}${path}.json?auth=${DATABASE_SECRETS}`;
+    
+    const cleanPath = path.replace(/[.#$\[\]]/g, '_');
+    const url = `${FIXED_DB_URL}${cleanPath}.json?auth=${DATABASE_SECRETS}`;
+    
     try {
         const response = await axios.get(url);
         return response.data;
     } catch (error) {
         if (error.response && error.response.status === 404) {
-            return null; // لا يوجد بيانات
+            return null;
         }
-        console.error(`❌ فشل القراءة من Firebase في ${path}:`, error.message);
+        console.error(`❌ فشل القراءة من Firebase في ${cleanPath}:`, error.message);
         throw error;
     }
 }
 
-// ==================== إعدادات الجلب (من الكود الأصلي) ====================
+// ==================== إعدادات الجلب ====================
 const ADVANCED_PROXIES = [
     { url: '', name: 'Direct' },
     { url: 'https://cors-anywhere.herokuapp.com/', name: 'Cors Anywhere' },
@@ -76,7 +83,7 @@ function getAdvancedHeaders() {
     };
 }
 
-async function advancedFetch(url, maxRetries = 5) {
+async function advancedFetch(url, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         const proxy = ADVANCED_PROXIES[Math.floor(Math.random() * ADVANCED_PROXIES.length)];
         try {
@@ -86,14 +93,14 @@ async function advancedFetch(url, maxRetries = 5) {
             }
             const response = await axios.get(targetUrl, {
                 headers: getAdvancedHeaders(),
-                timeout: 25000,
+                timeout: 20000,
                 validateStatus: (status) => status >= 200 && status < 500
             });
             if (response.status === 200) return response.data;
         } catch (error) {
             console.log(`❌ فشل [${proxy.name}]: ${error.message}`);
         }
-        await new Promise(resolve => setTimeout(resolve, 3000 * attempt));
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
     }
     throw new Error(`فشل ${maxRetries} محاولات لجلب الصفحة`);
 }
@@ -120,7 +127,7 @@ function extractImages(html) {
         const rawUrl = $(element).attr('src') || $(element).attr('data-src') || $(element).attr('data-lazy-src');
         if (rawUrl) {
             const cleanUrl = cleanImageUrl(rawUrl);
-            if (cleanUrl && (cleanUrl.includes('.jpg') || cleanUrl.includes('.png') || cleanUrl.includes('.jpeg'))) {
+            if (cleanUrl && (cleanUrl.includes('.jpg') || cleanUrl.includes('.png') || cleanUrl.includes('.jpeg') || cleanUrl.includes('.webp'))) {
                 images.push({ order: i + 1, originalUrl: cleanUrl });
             }
         }
@@ -143,14 +150,18 @@ function extractImages(html) {
 
 async function uploadToImgBB(imageUrl) {
     if (!IMGBB_API_KEY) {
-        return { success: false, message: 'IMGBB_API_KEY مفقود' };
+        return { 
+            success: false, 
+            message: 'IMGBB_API_KEY مفقود',
+            url: imageUrl 
+        };
     }
     
     try {
         const imageResponse = await axios.get(imageUrl, {
             responseType: 'arraybuffer',
             headers: getAdvancedHeaders(),
-            timeout: 20000
+            timeout: 15000
         });
         
         const base64Image = Buffer.from(imageResponse.data, 'binary').toString('base64');
@@ -161,101 +172,194 @@ async function uploadToImgBB(imageUrl) {
         
         const uploadResponse = await axios.post('https://api.imgbb.com/1/upload', formData, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 30000
+            timeout: 25000
         });
         
         if (uploadResponse.data.success) {
-            return { success: true, url: uploadResponse.data.data.url };
+            return { 
+                success: true, 
+                url: uploadResponse.data.data.url 
+            };
         } else {
-            return { success: false, message: uploadResponse.data.error.message };
+            return { 
+                success: false, 
+                message: uploadResponse.data.error?.message || 'Upload failed',
+                url: imageUrl 
+            };
         }
         
     } catch (error) {
-        return { success: false, message: error.message };
+        return { 
+            success: false, 
+            message: error.message,
+            url: imageUrl 
+        };
     }
 }
 
 // ==================== منطق المعالجة الرئيسي ====================
-
 async function processChapter(mangaId, chapterId, chapterData) {
-    console.log(`\n🎯 بدء معالجة الفصل: ${chapterData.title} (${mangaId}/${chapterId})`);
-    
-    // تحديث الحالة إلى "processing"
-    await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'processing');
+    console.log(`\n🎯 بدء معالجة الفصل: ${chapterData?.title || chapterId} (${mangaId})`);
     
     try {
+        // تحديث الحالة إلى "processing" مع هيكل صحيح
+        const updateData = {
+            ...chapterData,
+            status: 'processing',
+            lastUpdated: Date.now(),
+            processingStarted: Date.now()
+        };
+        
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}`, updateData);
+        
+        if (!chapterData?.url) {
+            throw new Error('رابط الفصل غير موجود');
+        }
+        
         const html = await fetchPageWithRetry(chapterData.url);
         const images = extractImages(html);
         
-        if (images.length === 0) throw new Error('لم يتم العثور على أي صور.');
+        if (images.length === 0) {
+            throw new Error('لم يتم العثور على أي صور.');
+        }
         
         console.log(`📊 تم العثور على ${images.length} صورة. بدء الرفع...`);
         
-        const uploadedImages = {};
+        const uploadedImages = [];
         let successCount = 0;
+        let failedCount = 0;
         
         for (const image of images) {
             const uploadResult = await uploadToImgBB(image.originalUrl);
             
-            uploadedImages[image.order] = {
-                imgOriginal: image.originalUrl,
-                imgbb: uploadResult.success ? uploadResult.url : "failed"
+            const imageData = {
+                order: image.order,
+                originalUrl: image.originalUrl,
+                uploadedUrl: uploadResult.success ? uploadResult.url : image.originalUrl,
+                uploadSuccess: uploadResult.success,
+                error: uploadResult.success ? null : uploadResult.message,
+                uploadedAt: Date.now()
             };
+            
+            uploadedImages.push(imageData);
             
             if (uploadResult.success) {
                 successCount++;
                 console.log(`✅ تم رفع الصورة ${image.order}`);
             } else {
-                console.log(`❌ فشل رفع الصورة ${image.order}: ${uploadResult.message}`);
+                failedCount++;
+                console.log(`⚠️ فشل رفع الصورة ${image.order}: ${uploadResult.message}`);
             }
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
         
-        // حفظ الصور تحت ImgChapter/manga_id/chapters/chapter_id/images/
-        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/images`, uploadedImages);
-        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'completed');
-        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/completedAt`, Date.now());
+        // تحديث البيانات مع النتائج
+        const finalData = {
+            ...chapterData,
+            images: uploadedImages,
+            totalImages: images.length,
+            uploadedImages: successCount,
+            failedImages: failedCount,
+            status: successCount > 0 ? 'completed' : 'failed',
+            completedAt: Date.now(),
+            lastUpdated: Date.now()
+        };
+        
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}`, finalData);
         
         console.log(`\n✅ تم معالجة الفصل ${chapterId} بنجاح!`);
-        return { success: true, status: 'completed' };
+        console.log(`📊 النتائج: ${successCount} ناجحة، ${failedCount} فاشلة`);
+        
+        return { 
+            success: true, 
+            status: 'completed',
+            stats: { successCount, failedCount, total: images.length }
+        };
         
     } catch (error) {
         console.error('❌ خطأ في معالجة الفصل:', error.message);
-        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/status`, 'error');
-        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}/error`, error.message);
-        return { success: false, status: 'error' };
+        
+        const errorData = {
+            ...chapterData,
+            status: 'error',
+            error: error.message,
+            lastUpdated: Date.now(),
+            errorAt: Date.now()
+        };
+        
+        await writeToFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}`, errorData);
+        
+        return { 
+            success: false, 
+            status: 'error',
+            error: error.message 
+        };
     }
 }
 
 // ==================== واجهات API ====================
 const app = express();
+app.use(express.json());
 
 app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
     const { mangaId, chapterId } = req.params;
+    
     try {
+        console.log(`📥 طلب معالجة: ${mangaId}/${chapterId}`);
+        
         const chapterData = await readFromFirebase(`ImgChapter/${mangaId}/chapters/${chapterId}`);
-        if (!chapterData) return res.status(404).json({ success: false, message: 'لم يتم العثور على الفصل' });
+        
+        if (!chapterData) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'لم يتم العثور على الفصل' 
+            });
+        }
+        
+        if (chapterData.status === 'completed' || chapterData.status === 'processing') {
+            return res.json({ 
+                success: true, 
+                message: 'الفصل قيد المعالجة أو مكتمل بالفعل',
+                status: chapterData.status 
+            });
+        }
         
         // المعالجة في الخلفية
         processChapter(mangaId, chapterId, chapterData);
-        res.json({ success: true, message: 'بدأت معالجة الصور.' });
+        
+        res.json({ 
+            success: true, 
+            message: 'بدأت معالجة الصور.',
+            chapterId: chapterId,
+            mangaId: mangaId
+        });
+        
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
-// محرك الفحص المستمر للفصول المعلقة (لضمان الاستمرارية)
+// محرك الفحص المستمر للفصول المعلقة
 async function continuousChapterCheck() {
     while (true) {
         try {
             const allManga = await readFromFirebase('ImgChapter');
+            
             if (allManga) {
                 for (const [mangaId, mangaData] of Object.entries(allManga)) {
-                    if (mangaData.chapters) {
-                        for (const [chapId, chapData] of Object.entries(mangaData.chapters)) {
-                            if (chapData && (chapData.status === 'pending_images' || chapData.status === 'error')) {
-                                await processChapter(mangaId, chapId, chapData);
-                                await new Promise(resolve => setTimeout(resolve, 5000));
+                    if (mangaData && mangaData.chapters) {
+                        for (const [chapterId, chapterData] of Object.entries(mangaData.chapters)) {
+                            if (chapterData && 
+                                (chapterData.status === 'pending_images' || 
+                                 chapterData.status === 'error')) {
+                                
+                                console.log(`🔍 معالجة الفصل: ${mangaId}/${chapterId}`);
+                                await processChapter(mangaId, chapterId, chapterData);
+                                await new Promise(resolve => setTimeout(resolve, 10000));
                             }
                         }
                     }
@@ -264,12 +368,13 @@ async function continuousChapterCheck() {
         } catch (error) {
             console.error('❌ خطأ في محرك فحص الفصول:', error.message);
         }
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        
+        await new Promise(resolve => setTimeout(resolve, 120000));
     }
 }
 
 app.get('/', (req, res) => {
-    res.send(`<h1>🖼️ البوت 3 - معالج الصور (معدل)</h1>`);
+    res.send(`<h1>🖼️ البوت 3 - معالج الصور</h1>`);
 });
 
 app.listen(PORT, () => {
