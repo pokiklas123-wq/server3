@@ -1,11 +1,11 @@
 {
-  "name": "manga-scraper-1",
+  "name": "manga-scraper-3",
   "version": "1.0.0",
-  "description": "السيرفر 1 - جلب المانجا من جميع الصفحات",
-  "main": "server-1.js",
+  "description": "السيرفر 3 - استخراج صور الفصول",
+  "main": "server-3.js",
   "scripts": {
-    "start": "node server-1.js",
-    "dev": "nodemon server-1.js"
+    "start": "node server-3.js",
+    "dev": "nodemon server-3.js"
   },
   "dependencies": {
     "express": "^4.18.2",
