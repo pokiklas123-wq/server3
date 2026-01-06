@@ -56,17 +56,31 @@ async function readFromFirebase(path) {
 
 // ==================== دوال المساعدة ====================
 function getRandomHeaders() {
+    // **التعديل 1: استخدام رؤوس متقدمة لتجاوز الحظر 403**
     const userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
     
+    const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+    
     return {
-        'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-        // **التعديل 1: إضافة Referer لتقليل الحظر**
-        'Referer': 'https://azoramoon.com/', 
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
+        'User-Agent': randomUserAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+        'Cache-Control': 'max-age=0',
+        'Connection': 'keep-alive',
+        'Referer': 'https://azoramoon.com/', // مهم جداً
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        // رؤوس خاصة بـ Chrome
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"'
     };
 }
 
@@ -89,7 +103,10 @@ async function fetchWithRetry(url, maxRetries = SYSTEM_CONFIG.MAX_FETCH_RETRIES)
             }
         }
         
-        await new Promise(resolve => setTimeout(resolve, 3000 * (i + 1)));
+        // **التعديل 12: استخدام تأخير عشوائي لمحاكاة سلوك الإنسان**
+        const randomDelay = 2000 + Math.floor(Math.random() * 3000); // بين 2 و 5 ثواني
+        console.log(`   ⏳ فشل الطلب (${i + 1}/${maxRetries}). الانتظار ${randomDelay / 1000} ثانية...`);
+        await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
     
     throw new Error(`فشلت ${maxRetries} محاولات لجلب الصفحة`);
@@ -309,14 +326,17 @@ async function continuousChapterCheck() {
                     const groupData = await readFromFirebase(groupName);
                     
                     if (!groupData || typeof groupData !== 'object') {
-                        console.log(`   ⏭️  المجموعة فارغة أو غير موجودة`);
+                        console.log(`   ⏭️  المجموعة فارغة أو غير موجودة (Group Data: ${JSON.stringify(groupData)})`);
                         continue;
                     }
+                    
+                    const mangaIds = Object.keys(groupData).filter(key => key !== 'created' && key !== 'type');
+                    console.log(`   📊 تم العثور على ${mangaIds.length} مانجا في المجموعة.`);
                     
                     let groupChapters = 0;
                     let groupProcessed = 0;
                     
-                    for (const mangaId in groupData) {
+                    for (const mangaId of mangaIds) {
                         const mangaData = groupData[mangaId];
                         
                         if (mangaData && mangaData.chapters) {
@@ -325,6 +345,9 @@ async function continuousChapterCheck() {
                             
                             for (const chapterId in chapters) {
                                 const chapter = chapters[chapterId];
+                                
+                                // **التعديل 11: إضافة تسجيل مفصل لحالة الفصل**
+                                console.log(`   🔍 فحص الفصل ${mangaId}/${chapterId} - الحالة الحالية: ${chapter.status || 'غير محدد'}`);
                                 
                                 if (chapter && chapter.status === 'pending_images') {
                                     console.log(`\n🎯 معالجة الفصل: ${mangaId}/${chapterId}`);
