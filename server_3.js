@@ -284,7 +284,116 @@ async function updateImageStats(mangaId, chapterId, imageCount) {
     }
 }
 
-// **التعديل 5: إزالة محرك الفحص المستمر غير الضروري**
+// ==================== محرك الفحص المستمر ====================
+async function continuousChapterCheck() {
+    console.log('\n🔍 بدء الفحص المستمر للفصول...');
+    
+    while (true) {
+        try {
+            let processedCount = 0;
+            let totalImages = 0;
+            
+            console.log('\n📊 بدء دورة فحص جديدة للفصول...');
+            
+            const chapterStats = await readFromFirebase('System/chapter_stats') || {};
+            const maxGroup = chapterStats.currentGroup || 1;
+            
+            console.log(`📁 عدد مجموعات الفصول: ${maxGroup}`);
+            
+            for (let groupNum = 1; groupNum <= maxGroup; groupNum++) {
+                const groupName = `ImgChapter_${groupNum}`;
+                
+                try {
+                    console.log(`\n📁 فحص مجموعة الفصول: ${groupName}`);
+                    
+                    const groupData = await readFromFirebase(groupName);
+                    
+                    if (!groupData || typeof groupData !== 'object') {
+                        console.log(`   ⏭️  المجموعة فارغة أو غير موجودة`);
+                        continue;
+                    }
+                    
+                    let groupChapters = 0;
+                    let groupProcessed = 0;
+                    
+                    for (const mangaId in groupData) {
+                        const mangaData = groupData[mangaId];
+                        
+                        if (mangaData && mangaData.chapters) {
+                            const chapters = mangaData.chapters;
+                            groupChapters += Object.keys(chapters).length;
+                            
+                            for (const chapterId in chapters) {
+                                const chapter = chapters[chapterId];
+                                
+                                if (chapter && chapter.status === 'pending_images') {
+                                    console.log(`\n🎯 معالجة الفصل: ${mangaId}/${chapterId}`);
+                                    console.log(`   📊 الحالة: ${chapter.status}`);
+                                    
+                                    try {
+                                        const result = await processChapter(mangaId, chapterId, groupName);
+                                        
+                                        if (result.success && !result.skipped) {
+                                            processedCount++;
+                                            groupProcessed++;
+                                            totalImages += result.totalImages || 0;
+                                            
+                                            console.log(`   ✅ تمت المعالجة: ${result.totalImages || 0} صورة`);
+                                        } else if (result.skipped) {
+                                            console.log(`   ⏭️  تم تخطي الفصل (${result.status})`);
+                                        }
+                                        
+                                    } catch (error) {
+                                        console.error(`   ❌ خطأ في المعالجة: ${error.message}`);
+                                    }
+                                    
+                                    await new Promise(resolve => setTimeout(resolve, SYSTEM_CONFIG.DELAY_BETWEEN_CHAPTERS));
+                                    
+                                    if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
+                                        console.log(`\n⏸️  وصلت للحد الأقصى (${SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE}) في هذه الدورة`);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    console.log(`   📊 المجموعة ${groupName}: ${groupProcessed}/${groupChapters} فصل معالج`);
+                    
+                    await new Promise(resolve => setTimeout(resolve, SYSTEM_CONFIG.DELAY_BETWEEN_GROUPS));
+                    
+                    if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
+                        break;
+                    }
+                    
+                } catch (groupError) {
+                    console.error(`   ❌ خطأ في المجموعة ${groupName}:`, groupError.message);
+                }
+            }
+            
+            console.log(`\n📊 دورة الفحص اكتملت:`);
+            console.log(`   • فصول معالجة: ${processedCount}`);
+            console.log(`   • صور محفوظة: ${totalImages}`);
+            
+            const waitTime = processedCount > 0 ? 180000 : 300000;
+            console.log(`⏳ الانتظار ${waitTime / 1000} ثانية للدورة التالية...\n`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            
+        } catch (error) {
+            console.error('❌ خطأ في محرك فحص الفصول:', error.message);
+            await new Promise(resolve => setTimeout(resolve, 60000));
+        }
+    }
+}
+/*
+async function continuousChapterCheck() {
+    // ... (تمت إزالة الكود)
+}
+*/
 /*
 async function continuousChapterCheck() {
     // ... (تمت إزالة الكود)
@@ -356,7 +465,7 @@ app.get('/stats', async (req, res) => {
 app.get('/', (req, res) => {
     res.send(`
         <h1>🖼️ البوت 3 - معالج الصور</h1>
-        <p><strong>الحالة:</strong> 🟢 يعمل وينتظر أوامر من البوت 2</p>
+        <p><strong>الحالة:</strong> 🟢 يعمل (مستمع للبوت 2 + فحص مستمر)</p>
         <p><strong>ImgBB:</strong> ❌ معطل</p>
         <p><strong>الروابط المباشرة:</strong> ✅ مفعل</p>
         <p><strong>الصور/الفصل:</strong> ${SYSTEM_CONFIG.MAX_IMAGES_PER_CHAPTER}</p>
@@ -381,8 +490,8 @@ app.listen(PORT, () => {
     console.log(`   • الحد/دورة: ${SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE} فصل`);
     
     setTimeout(() => {
-        // **التعديل 10: إزالة بدء الفحص المستمر**
-        // continuousChapterCheck();
-        console.log('⏸️ تم تعطيل الفحص المستمر. البوت ينتظر الآن إشارات من البوت 2.');
+        // **التعديل 10: إعادة تفعيل بدء الفحص المستمر كخيار احتياطي**
+        continuousChapterCheck();
+        console.log('✅ تم تفعيل الفحص المستمر كخيار احتياطي.');
     }, 5000);
 });
