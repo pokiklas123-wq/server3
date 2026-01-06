@@ -5,7 +5,7 @@ require('dotenv').config();
 
 // ==================== متغيرات البيئة ====================
 const PORT = process.env.PORT || 3002;
-const DATABASE_SECRETS = "KXPNxnGZDA1BGnzs4kZIA45o6Vr9P5nJ3Z01X4bt";
+const DATABASE_SECRETS = "KXPNxnGZDA1BGnzs4kZIA45o6Vr9P5nJ3Z01X4bt"; // يجب أن يكون هذا سراً
 const DATABASE_URL = "https://hackerdz-b1bdf.firebaseio.com";
 
 // ==================== إعدادات النظام ====================
@@ -63,7 +63,8 @@ function getRandomHeaders() {
     
     return {
         'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-        'Referer': 'https://azoramoon.com/',
+        // **التعديل 1: إضافة Referer لتقليل الحظر**
+        'Referer': 'https://azoramoon.com/', 
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5'
     };
@@ -102,7 +103,8 @@ function cleanImageUrl(url) {
         .trim()
         .replace(/^\/\//, 'https://');
     
-    if (cleanUrl.startsWith('/')) {
+    // **التعديل 2: التأكد من إضافة النطاق الأساسي إذا كان الرابط نسبياً**
+    if (cleanUrl.startsWith('/') && !cleanUrl.startsWith('//')) {
         cleanUrl = `https://azoramoon.com${cleanUrl}`;
     }
     
@@ -154,7 +156,8 @@ function extractImages(html) {
         
         if (images.length > 0) {
             console.log(`✅ وجد ${images.length} صورة باستخدام: ${selector}`);
-            break;
+            // **التعديل 3: التوقف بعد العثور على الصور لتجنب التكرار**
+            break; 
         }
     }
     
@@ -167,7 +170,7 @@ async function processChapter(mangaId, chapterId, chapterGroup) {
     
     try {
         const chapterPath = `${chapterGroup}/${mangaId}/chapters/${chapterId}`;
-        const chapterData = await readFromFirebase(chapterPath);
+        let chapterData = await readFromFirebase(chapterPath);
         
         if (!chapterData) {
             throw new Error(`الفصل غير موجود في ${chapterPath}`);
@@ -185,6 +188,7 @@ async function processChapter(mangaId, chapterId, chapterGroup) {
             };
         }
         
+        // **التعديل 4: تحديث الحالة إلى قيد المعالجة**
         await writeToFirebase(chapterPath, {
             ...chapterData,
             status: 'processing',
@@ -246,7 +250,6 @@ async function processChapter(mangaId, chapterId, chapterGroup) {
                     ...chapterData,
                     status: 'error',
                     error: error.message,
-                    errorAt: Date.now(),
                     lastUpdated: Date.now()
                 });
             }
@@ -281,115 +284,17 @@ async function updateImageStats(mangaId, chapterId, imageCount) {
     }
 }
 
-// ==================== محرك الفحص المستمر ====================
+// **التعديل 5: إزالة محرك الفحص المستمر غير الضروري**
+/*
 async function continuousChapterCheck() {
-    console.log('\n🔍 بدء الفحص المستمر للفصول...');
-    
-    while (true) {
-        try {
-            let processedCount = 0;
-            let totalImages = 0;
-            
-            console.log('\n📊 بدء دورة فحص جديدة للفصول...');
-            
-            const chapterStats = await readFromFirebase('System/chapter_stats') || {};
-            const maxGroup = chapterStats.currentGroup || 1;
-            
-            console.log(`📁 عدد مجموعات الفصول: ${maxGroup}`);
-            
-            for (let groupNum = 1; groupNum <= maxGroup; groupNum++) {
-                const groupName = `ImgChapter_${groupNum}`;
-                
-                try {
-                    console.log(`\n📁 فحص مجموعة الفصول: ${groupName}`);
-                    
-                    const groupData = await readFromFirebase(groupName);
-                    
-                    if (!groupData || typeof groupData !== 'object') {
-                        console.log(`   ⏭️  المجموعة فارغة أو غير موجودة`);
-                        continue;
-                    }
-                    
-                    let groupChapters = 0;
-                    let groupProcessed = 0;
-                    
-                    for (const mangaId in groupData) {
-                        const mangaData = groupData[mangaId];
-                        
-                        if (mangaData && mangaData.chapters) {
-                            const chapters = mangaData.chapters;
-                            groupChapters += Object.keys(chapters).length;
-                            
-                            for (const chapterId in chapters) {
-                                const chapter = chapters[chapterId];
-                                
-                                if (chapter && chapter.status === 'pending_images') {
-                                    console.log(`\n🎯 معالجة الفصل: ${mangaId}/${chapterId}`);
-                                    console.log(`   📊 الحالة: ${chapter.status}`);
-                                    
-                                    try {
-                                        const result = await processChapter(mangaId, chapterId, groupName);
-                                        
-                                        if (result.success && !result.skipped) {
-                                            processedCount++;
-                                            groupProcessed++;
-                                            totalImages += result.totalImages || 0;
-                                            
-                                            console.log(`   ✅ تمت المعالجة: ${result.totalImages || 0} صورة`);
-                                        } else if (result.skipped) {
-                                            console.log(`   ⏭️  تم تخطي الفصل (${result.status})`);
-                                        }
-                                        
-                                    } catch (error) {
-                                        console.error(`   ❌ خطأ في المعالجة: ${error.message}`);
-                                    }
-                                    
-                                    await new Promise(resolve => setTimeout(resolve, SYSTEM_CONFIG.DELAY_BETWEEN_CHAPTERS));
-                                    
-                                    if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
-                                        console.log(`\n⏸️  وصلت للحد الأقصى (${SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE}) في هذه الدورة`);
-                                        break;
-                                    }
-                                }
-                            }
-                            
-                            if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
-                                break;
-                            }
-                        }
-                    }
-                    
-                    console.log(`   📊 المجموعة ${groupName}: ${groupProcessed}/${groupChapters} فصل معالج`);
-                    
-                    await new Promise(resolve => setTimeout(resolve, SYSTEM_CONFIG.DELAY_BETWEEN_GROUPS));
-                    
-                    if (processedCount >= SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE) {
-                        break;
-                    }
-                    
-                } catch (groupError) {
-                    console.error(`   ❌ خطأ في المجموعة ${groupName}:`, groupError.message);
-                }
-            }
-            
-            console.log(`\n📊 دورة الفحص اكتملت:`);
-            console.log(`   • فصول معالجة: ${processedCount}`);
-            console.log(`   • صور محفوظة: ${totalImages}`);
-            
-            const waitTime = processedCount > 0 ? 180000 : 300000;
-            console.log(`⏳ الانتظار ${waitTime / 1000} ثانية للدورة التالية...\n`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            
-        } catch (error) {
-            console.error('❌ خطأ في محرك فحص الفصول:', error.message);
-            await new Promise(resolve => setTimeout(resolve, 60000));
-        }
-    }
+    // ... (تمت إزالة الكود)
 }
+*/
 
 // ==================== واجهات API ====================
 const app = express();
 
+// **التعديل 6: تعديل واجهة API لاستقبال الطلب من البوت 2**
 app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
     const { mangaId, chapterId } = req.params;
     const { group } = req.query;
@@ -402,11 +307,14 @@ app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
             });
         }
         
-        processChapter(mangaId, chapterId, group);
+        // **التعديل 7: تشغيل العملية في الخلفية لتجنب انتهاء مهلة الطلب**
+        processChapter(mangaId, chapterId, group)
+            .then(result => console.log(`[خلفية] معالجة الفصل ${chapterId} اكتملت:`, result))
+            .catch(error => console.error(`[خلفية] خطأ في معالجة الفصل ${chapterId}:`, error.message));
         
         res.json({ 
             success: true, 
-            message: 'بدأت معالجة الصور',
+            message: 'بدأت معالجة الصور في الخلفية',
             mangaId: mangaId,
             chapterId: chapterId,
             group: group
@@ -420,66 +328,8 @@ app.get('/process-chapter/:mangaId/:chapterId', async (req, res) => {
     }
 });
 
-app.get('/force-process/:groupNum', async (req, res) => {
-    const { groupNum } = req.params;
-    const groupName = `ImgChapter_${groupNum}`;
-    
-    try {
-        console.log(`🚀 بدء معالجة قسرية للمجموعة ${groupName}`);
-        
-        const groupData = await readFromFirebase(groupName);
-        
-        if (!groupData) {
-            return res.json({ 
-                success: false, 
-                message: `المجموعة ${groupName} غير موجودة` 
-            });
-        }
-        
-        let processed = 0;
-        let totalImages = 0;
-        
-        for (const mangaId in groupData) {
-            const mangaData = groupData[mangaId];
-            
-            if (mangaData && mangaData.chapters) {
-                const chapters = mangaData.chapters;
-                
-                for (const chapterId in chapters) {
-                    const chapter = chapters[chapterId];
-                    
-                    if (chapter && chapter.status === 'pending_images') {
-                        const result = await processChapter(mangaId, chapterId, groupName);
-                        processed++;
-                        
-                        if (result.success && result.totalImages) {
-                            totalImages += result.totalImages;
-                        }
-                        
-                        if (processed >= 3) break; // 3 فصول فقط للاختبار
-                    }
-                    
-                    if (processed >= 3) break;
-                }
-            }
-            
-            if (processed >= 3) break;
-        }
-        
-        res.json({ 
-            success: true, 
-            message: `تم معالجة ${processed} فصل من ${groupName}`,
-            processed: processed,
-            totalImages: totalImages
-        });
-        
-    } catch (error) {
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
-    }
-});
+// **التعديل 8: إزالة واجهة API /force-process/:groupNum غير الضرورية**
+// app.get('/force-process/:groupNum', async (req, res) => { ... });
 
 app.get('/stats', async (req, res) => {
     try {
@@ -500,36 +350,13 @@ app.get('/stats', async (req, res) => {
     }
 });
 
-app.get('/test-image/:url(*)', async (req, res) => {
-    const { url } = req.params;
-    
-    try {
-        const decodedUrl = decodeURIComponent(url);
-        console.log(`🔗 اختبار جلب الصور من: ${decodedUrl}`);
-        
-        const html = await fetchWithRetry(decodedUrl);
-        const images = extractImages(html);
-        
-        res.json({
-            success: true,
-            url: decodedUrl,
-            totalImages: images.length,
-            images: images.slice(0, 3),
-            sampleImage: images[0] || null
-        });
-        
-    } catch (error) {
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
-    }
-});
+// **التعديل 9: إزالة واجهة API /test-image/:url(*) غير الضرورية**
+// app.get('/test-image/:url(*)', async (req, res) => { ... });
 
 app.get('/', (req, res) => {
     res.send(`
-        <h1>🖼️ البوت 3 - معالج الصور (النسخة النشطة)</h1>
-        <p><strong>الحالة:</strong> 🟢 يعمل ويبحث في جميع مجموعات الفصول</p>
+        <h1>🖼️ البوت 3 - معالج الصور</h1>
+        <p><strong>الحالة:</strong> 🟢 يعمل وينتظر أوامر من البوت 2</p>
         <p><strong>ImgBB:</strong> ❌ معطل</p>
         <p><strong>الروابط المباشرة:</strong> ✅ مفعل</p>
         <p><strong>الصور/الفصل:</strong> ${SYSTEM_CONFIG.MAX_IMAGES_PER_CHAPTER}</p>
@@ -537,11 +364,9 @@ app.get('/', (req, res) => {
         
         <h3>الروابط:</h3>
         <p><a href="/stats">/stats</a> - إحصائيات الصور</p>
-        <p><a href="/force-process/1">/force-process/1</a> - معالجة قسرية للمجموعة 1</p>
         
         <h3>ملاحظات:</h3>
         <p>• يستخدم الروابط المباشرة فقط (بدون ImgBB)</p>
-        <p>• يبحث في ImgChapter_1 إلى ImgChapter_N</p>
         <p>• يعالج الفصول ذات الحالة 'pending_images'</p>
         <p>• يحفظ الروابط الأصلية كما هي</p>
     `);
@@ -556,6 +381,8 @@ app.listen(PORT, () => {
     console.log(`   • الحد/دورة: ${SYSTEM_CONFIG.MAX_CHAPTERS_PER_CYCLE} فصل`);
     
     setTimeout(() => {
-        continuousChapterCheck();
+        // **التعديل 10: إزالة بدء الفحص المستمر**
+        // continuousChapterCheck();
+        console.log('⏸️ تم تعطيل الفحص المستمر. البوت ينتظر الآن إشارات من البوت 2.');
     }, 5000);
 });
